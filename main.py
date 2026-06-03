@@ -96,7 +96,7 @@ def _build_display(data: dict[str, Any], token: str, encoded: str) -> str:
 	
 
 	return_text += (	
-		f"\n将取件码👇传给 🤖 <code>@</code><code>{bot_name_lack}</code><code>t</code> \n\n{hidden_char}<code>{encoded}</code>{hidden_char}"
+		f"\n将取件码👇传给 🤖 <code>{bot_name_lack}</code><code> t</code> (去空格) \n\n{hidden_char}<code>{encoded}</code>{hidden_char}"
 	)
 
 	return return_text
