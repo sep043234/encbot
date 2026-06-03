@@ -96,7 +96,7 @@ def _build_display(data: dict[str, Any], token: str, encoded: str) -> str:
 	
 
 	return_text += (	
-		f"\n将咒语👇传给 🤖 <code>@</code><code>{bot_name_lack}</code><code>t</code> \n\n{hidden_char}<code>{encoded}</code>{hidden_char}"
+		f"\n将取件码👇传给 🤖 <code>@</code><code>{bot_name_lack}</code><code>t</code> \n\n{hidden_char}<code>{encoded}</code>{hidden_char}"
 	)
 
 	return return_text
@@ -241,9 +241,9 @@ async def _delete_message_later(sent_message: Message, delay_seconds: int) -> No
 async def cmd_start(message: Message) -> None:
 	await message.reply(
 		"👋 你好！\n\n"
-		"发送文件（photo/document/video/audio/voice...）给我，我会回复加密后字符串。\n"
-		"你也可以直接粘贴咒语，我会解码返回媒体。"
-		"一个咒语只支持一个媒体文件。\n\n"
+		"发送文件 （ 图片/文件/视频/音频/语音...）给我，我会回复取件码(加密后字符串)。\n"
+		"你也可以直接粘贴取件码，我会解码返回媒体。"
+		"一个取件码只支持一个媒体文件。\n\n"
 	)
 
 
@@ -275,7 +275,7 @@ async def on_media(message: Message) -> None:
 		panel = await message.reply(_build_display(parsed, token, encoded), reply_markup=markup, parse_mode="HTML")
 		ENCODER_UI_STATE[(message.chat.id, panel.message_id)] = state
 	except Exception as exc:
-		await message.reply(f"❌ 编码失败: {exc}")
+		await message.reply(f"❌ 取码失败: {exc}")
 
 
 @dp.callback_query(F.data.startswith("enc:"))
