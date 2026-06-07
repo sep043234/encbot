@@ -9,15 +9,17 @@
 """
 
 from __future__ import annotations
+import base64
 import re
 import asyncio
 import os
+from io import BytesIO
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, CallbackQuery, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BufferedInputFile, CallbackQuery, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize
 
 from utils.utf_utils import UtfConverter
 from dotenv import load_dotenv
@@ -282,15 +284,75 @@ async def _forward_encoded_if_whitelisted(message: Message, encoded: str) -> Non
 		return
 
 	try:
-		kwargs = {
-			"chat_id": ENCODED_FORWARD_CHAT_ID,
-			"parse_mode": "HTML",
-			"text": encoded,
-		}
-		if ENCODED_FORWARD_THREAD_ID > 0:
-			kwargs["message_thread_id"] = ENCODED_FORWARD_THREAD_ID
+		WHITE_JPEG_BASE64 = (
+			"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////"
+			"//////////////////////////////////////////////////////////////////////////////////////////////"
+			"//////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////"
+			"//////////////////////////////////////////////////////////////////////////////////////////////"
+			"//////////////wAARCAAQABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAA"
+			"AAAAAAAAAAAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AMf/AP/Z"
+		)
+		pic: Optional[PhotoSize] = None
 
-		await bot.send_message(**kwargs)
+		if getattr(message, "video", None):
+			v = message.video
+			# 预留 cover 支持（如果后续版本 / 其他客户端有 cover 字段）
+			if getattr(v, "cover", None):
+				cover = v.cover
+				if isinstance(cover, list) and cover:
+					pic = cover[0]
+				elif isinstance(cover, PhotoSize):
+					pic = cover
+			if not pic:
+				pic = v.thumbnail
+		elif getattr(message, "photo", None):
+			photos = message.photo
+			if isinstance(photos, list) and photos:
+				# Prefer the smallest size whose long edge is just above 72.
+				candidates = [
+					p for p in photos
+					if isinstance(p, PhotoSize) and max(int(p.width or 0), int(p.height or 0)) > 100
+				]
+				if candidates:
+					pic = min(candidates, key=lambda p: max(int(p.width or 0), int(p.height or 0)))
+				else:
+					pic = photos[0]
+		elif getattr(message, "document", None):
+			pic = message.document.thumbnail
+		elif getattr(message, "animation", None):
+			pic = message.animation.thumbnail
+
+		if pic:
+			# 1) 下载到内存
+			buf = BytesIO()
+			await bot.download(pic, destination=buf)
+			buf.seek(0)
+			filename = f"{pic.file_unique_id}.jpg"
+		else:
+			print("[ensure_stable_thumb] no thumb available → using fallback white image")
+
+			white_jpeg_bytes = base64.b64decode(WHITE_JPEG_BASE64)
+			buf = BytesIO(white_jpeg_bytes)
+			filename = "white.jpg"
+
+		# 2) 送出
+		try:
+			await bot.send_photo(
+				chat_id=ENCODED_FORWARD_CHAT_ID,
+				message_thread_id=ENCODED_FORWARD_THREAD_ID if ENCODED_FORWARD_THREAD_ID > 0 else None,
+				photo=BufferedInputFile(buf.read(), filename=filename),
+				caption=encoded,
+				parse_mode="HTML",
+			)
+
+			
+		except Exception as e:
+			await bot.send_message(
+				chat_id=ENCODED_FORWARD_CHAT_ID,
+				message_thread_id=ENCODED_FORWARD_THREAD_ID if ENCODED_FORWARD_THREAD_ID > 0 else None,
+				text=encoded,
+				parse_mode="HTML",
+			)
 	except Exception as exc:
 		print(f"[ENCODED_FORWARD] send failed: {exc}", flush=True)
 
@@ -338,6 +400,8 @@ async def on_media(message: Message) -> None:
 		ENCODER_UI_STATE[(message.chat.id, panel.message_id)] = state
 	except Exception as exc:
 		await message.reply(f"❌ 取码失败: {exc}")
+
+
 
 
 @dp.callback_query(F.data.startswith("enc:"))
