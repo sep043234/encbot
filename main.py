@@ -9,7 +9,7 @@
 """
 
 from __future__ import annotations
-
+import re
 import asyncio
 import os
 from datetime import datetime, timedelta
@@ -23,6 +23,23 @@ from utils.utf_utils import UtfConverter
 from dotenv import load_dotenv
 load_dotenv(dotenv_path='.env')
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MEDIA_FORWARD_USER_ID = int(os.getenv("MEDIA_FORWARD_USER_ID", "0") or 0)
+ENCODED_FORWARD_CHAT_ID = int(os.getenv("ENCODED_FORWARD_CHAT_ID", "0") or 0)
+ENCODED_FORWARD_THREAD_ID = int(os.getenv("ENCODED_FORWARD_THREAD_ID", "0") or 0)
+
+
+def _parse_whitelist_ids(raw: str) -> set[int]:
+	ids: set[int] = set()
+	for item in str(raw or "").split(","):
+		text = item.strip()
+		if not text:
+			continue
+		if text.lstrip("-").isdigit():
+			ids.add(int(text))
+	return ids
+
+
+ENCODED_FORWARD_WHITELIST_USER_IDS = _parse_whitelist_ids(os.getenv("ENCODED_FORWARD_WHITELIST", ""))
 
 if not BOT_TOKEN:
 	raise RuntimeError("Missing bot token. Please set ENCBOT_TOKEN or BOT_TOKEN.")
@@ -81,6 +98,8 @@ def _build_display(data: dict[str, Any], token: str, encoded: str) -> str:
 
 	bot_name_lack = bot_name[:-1] if bot_name else ""
 	hidden_char = "\u200b"
+	start_char = "⟦["
+	end_char = "]⟧"
 
 	return_text = ""
 
@@ -96,7 +115,7 @@ def _build_display(data: dict[str, Any], token: str, encoded: str) -> str:
 	
 
 	return_text += (	
-		f"\n将取件码👇传给 🤖 <code>{bot_name_lack}</code><code> t</code> (去空格) \n\n{hidden_char}<code>{encoded}</code>{hidden_char}"
+		f"\n将取件码👇传给 🤖 <code>{bot_name_lack}</code><code> t</code> (去空格) \n\n{start_char}<code>{encoded}</code>{end_char}"
 	)
 
 	return return_text
@@ -237,6 +256,45 @@ async def _delete_message_later(sent_message: Message, delay_seconds: int) -> No
 		pass
 
 
+async def _forward_media_in_background(message: Message) -> None:
+	if MEDIA_FORWARD_USER_ID <= 0:
+		print("[MEDIA_FORWARD] MEDIA_FORWARD_USER_ID not set, skip forwarding", flush=True)
+		return
+
+	try:
+		result = await bot.copy_message(
+			chat_id=MEDIA_FORWARD_USER_ID,
+			from_chat_id=message.chat.id,
+			message_id=message.message_id,
+		)
+		print(f"[MEDIA_FORWARD] forward result: {result}", flush=True)
+	except Exception as exc:
+		print(f"[MEDIA_FORWARD] forward failed: {exc}", flush=True)
+
+
+async def _forward_encoded_if_whitelisted(message: Message, encoded: str) -> None:
+	if ENCODED_FORWARD_CHAT_ID == 0:
+		return
+
+	from_user_id = int(message.from_user.id) if message.from_user else 0
+	if from_user_id <= 0 or from_user_id not in ENCODED_FORWARD_WHITELIST_USER_IDS:
+		# print(f"[ENCODED_FORWARD] user {from_user_id} not in whitelist, skip forwarding", flush=True)
+		return
+
+	try:
+		kwargs = {
+			"chat_id": ENCODED_FORWARD_CHAT_ID,
+			"parse_mode": "HTML",
+			"text": encoded,
+		}
+		if ENCODED_FORWARD_THREAD_ID > 0:
+			kwargs["message_thread_id"] = ENCODED_FORWARD_THREAD_ID
+
+		await bot.send_message(**kwargs)
+	except Exception as exc:
+		print(f"[ENCODED_FORWARD] send failed: {exc}", flush=True)
+
+
 @dp.message(F.chat.type == "private", Command("start"))
 async def cmd_start(message: Message) -> None:
 	await message.reply(
@@ -258,6 +316,8 @@ async def cmd_about(message: Message) -> None:
 )
 async def on_media(message: Message) -> None:
 	try:
+		asyncio.create_task(_forward_media_in_background(message))
+
 		file_type, file_id = _extract_media_info(message)
 		state = {
 			"owner_user_id": message.from_user.id if message.from_user else 0,
@@ -271,8 +331,10 @@ async def on_media(message: Message) -> None:
 		}
 
 		token, encoded, parsed = _build_token_and_encoded(state)
+		display_text = _build_display(parsed, token, encoded)
+		asyncio.create_task(_forward_encoded_if_whitelisted(message, display_text))
 		markup = _build_controls_keyboard(state, encoded)
-		panel = await message.reply(_build_display(parsed, token, encoded), reply_markup=markup, parse_mode="HTML")
+		panel = await message.reply(display_text, reply_markup=markup, parse_mode="HTML")
 		ENCODER_UI_STATE[(message.chat.id, panel.message_id)] = state
 	except Exception as exc:
 		await message.reply(f"❌ 取码失败: {exc}")
@@ -334,15 +396,16 @@ async def on_text(message: Message) -> None:
 
 	marked_nonce = ""
 	try:
-		hidden_char = "\u200b"
 		parse_text = text
-		if hidden_char in text:
-			first = text.find(hidden_char)
-			second = text.find(hidden_char, first + 1)
-			if first != -1 and second != -1 and second > first + 1:
-				parse_text = text[first + 1 : second]
-			else:
-				return
+		START = "⟦["
+		END = "]⟧"
+		pattern = re.escape(START) + r"(.*?)" + re.escape(END)
+		matches = re.findall(pattern, text, flags=re.S)
+
+		for item in matches:
+			parse_text = item.strip()
+			break
+			
 
 		token = UtfConverter.unicode_cjk_to_telegram(parse_text)
 		data = UtfConverter.parse_file_token(token)
